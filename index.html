@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Habit Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    html, body, #root { height: 100%; }
+    table { table-layout: fixed; }
+  </style>
+</head>
+<body class="bg-neutral-100 text-neutral-900">
+<div id="root"></div>
+
+<!-- React + ReactDOM (no build step needed) -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+<script>
+  const { useState, useEffect, useMemo } = React;
+
+  // ===== Utilities =====
+  const pad = (n) => (n < 10 ? "0" + n : "" + n);
+  const toKey = (d) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  const addDays = (date, n) => { const d = new Date(date); d.setDate(d.getDate() + n); return d; };
+  const startOfWeek = (date, weekStartsOn = 1) => {
+    const d = new Date(date);
+    const day = (d.getDay() + 7 - weekStartsOn) % 7;
+    d.setDate(d.getDate() - day);
+    d.setHours(0,0,0,0);
+    return d;
+  };
+  const formatShort = (date) => date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const weekdayShort = (date) => date.toLocaleDateString(undefined, { weekday: "short" });
+
+  // ===== Defaults =====
+  const DEFAULT_HABITS = [
+    "Eat healthy",
+    "Workout",
+    "Apply for SWE roles",
+    "LeetCode",
+    "Shower",
+    "Read book",
+  ];
+  const STORAGE_KEY = "habit-tracker-v1";
+
+  function load() {
+    try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : null; }
+    catch(e){ return null; }
+  }
+  function save(obj) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch(e){}
+  }
+  function uniqueId(habits) {
+    let i = habits.length + 1;
+    while (habits.some(h => h.id === "h" + i)) i++;
+    return "h" + i;
+  }
+  function computeStreakForHabit(habitId, entries) {
+    let streak = 0;
+    let day = new Date();
+    day.setHours(0,0,0,0);
+    while (true) {
+      const key = toKey(day);
+      const v = entries[key]?.[habitId];
+      if (v) { streak += 1; day = addDays(day, -1); }
+      else break;
+    }
+    return streak;
+  }
+  function streakLabel(habitId, entries) {
+    const s = computeStreakForHabit(habitId, entries);
+    return s > 0 ? s + "-day streak" : "No current streak";
+  }
+  function lifetimeLabel(habitId, entries) {
+    let done = 0, total = 0;
+    for (const k of Object.keys(entries)) {
+      total++;
+      if (entries[k]?.[habitId]) done++;
+    }
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    return pct + "% lifetime";
+  }
+  function computeMetrics(habits, entries) {
+    const habitIds = habits.map(h => h.id);
+    const allDates = Object.keys(entries).sort();
+    const last7 = new Set((() => {
+      const out = [];
+      const today = new Date(); today.setHours(0,0,0,0);
+      for (let i=0;i<7;i++) out.push(toKey(addDays(today, -i)));
+      return out;
+    })());
+    let done=0,total=0, weekDone=0, weekTotal=0, bestStreak=0;
+    for (const dk of allDates) {
+      const day = entries[dk] || {};
+      for (const id of habitIds) {
+        total++; if (day[id]) done++;
+        if (last7.has(dk)) { weekTotal++; if (day[id]) weekDone++; }
+      }
+    }
+    for (const id of habitIds) bestStreak = Math.max(bestStreak, computeStreakForHabit(id, entries));
+    const allTimePct = total ? Math.round((done/total)*100) : 0;
+    const weekConsistency = weekTotal ? Math.round((weekDone/weekTotal)*100) : 0;
+    return { habitIds, allTimePct, weekConsistency, bestStreak };
+  }
+
+  function Metric({ label, value }) {
+    return (
+            React.createElement("div", { className: "p-3 rounded-xl bg-neutral-50 border border-neutral-200" },
+                    React.createElement("div", { className: "text-[11px] uppercase tracking-wide text-neutral-500" }, label),
+                    React.createElement("div", { className: "text-base font-semibold" }, value)
+            )
+    );
+  }
+
+  function StatsPanel({ metrics, entries, setValue }) {
+    const today = new Date();
+    const todayKey = toKey(today);
+    const completedToday = Object.values(entries[todayKey] || {}).filter(Boolean).length;
+    return (
+            React.createElement("div", { className: "border-t border-neutral-200 pt-4" },
+                    React.createElement("h2", { className: "text-lg font-semibold mb-2" }, "Today"),
+                    React.createElement("div", { className: "text-sm text-neutral-600 mb-3" }, formatShort(today)),
+                    React.createElement("div", { className: "grid grid-cols-2 gap-2 text-sm" },
+                            React.createElement(Metric, { label: "Completed", value: "" + completedToday }),
+                            React.createElement(Metric, { label: "Consistency (7d)", value: metrics.weekConsistency + "%" }),
+                            React.createElement(Metric, { label: "Best Streak", value: metrics.bestStreak + "d" }),
+                            React.createElement(Metric, { label: "All-time", value: metrics.allTimePct + "%" }),
+                    ),
+                    React.createElement("button", {
+                      className: "mt-3 w-full px-3 py-2 rounded-xl border border-neutral-300 hover:bg-neutral-50",
+                      onClick: () => {
+                        const ids = metrics.habitIds;
+                        ids.forEach((id) => setValue(todayKey, id, true));
+                      }
+                    }, "Mark all done today")
+            )
+    );
+  }
+
+  function ExportPanel({ habits, entries }) {
+    const downloadCsv = () => {
+      const rows = [];
+      const header = ["date", ...habits.map(h => h.name)];
+      rows.push(header);
+      const allDates = Object.keys(entries).sort();
+      for (const dk of allDates) {
+        const line = [dk];
+        for (const h of habits) line.push(entries[dk]?.[h.id] ? "1" : "0");
+        rows.push(line);
+      }
+      const csv = rows.map(r => r.map(c => c.includes(",") ? '"' + c.replaceAll('"','""') + '"' : c).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "habit-history.csv"; a.click();
+      URL.revokeObjectURL(url);
+    };
+    return (
+            React.createElement("div", { className: "border-t border-neutral-200 pt-4" },
+                    React.createElement("h2", { className: "text-lg font-semibold mb-2" }, "Export"),
+                    React.createElement("p", { className: "text-sm text-neutral-600 mb-3" }, "Download your history as CSV."),
+                    React.createElement("button", { className: "w-full px-3 py-2 rounded-xl bg-black text-white", onClick: downloadCsv }, "Export CSV")
+            )
+    );
+  }
+
+  function App() {
+    const loaded = load();
+    const [habits, setHabits] = useState(() => {
+      if (loaded?.habits?.length) return loaded.habits;
+      return DEFAULT_HABITS.map((name, i) => ({ id: "h" + (i+1), name, archived: false }));
+    });
+    const [entries, setEntries] = useState(() => loaded?.entries || {});
+    const [anchor, setAnchor] = useState(() => { const d = new Date(); d.setHours(0,0,0,0); return d; });
+    const [newHabit, setNewHabit] = useState("");
+    const [filter, setFilter] = useState("active"); // active | all | archived
+
+    useEffect(() => { save({ habits, entries }); }, [habits, entries]);
+
+    const weekStart = useMemo(() => startOfWeek(anchor, 1), [anchor]); // Monday
+    const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
+
+    const visibleHabits = useMemo(() => {
+      if (filter === "all") return habits;
+      if (filter === "archived") return habits.filter(h => h.archived);
+      return habits.filter(h => !h.archived);
+    }, [habits, filter]);
+
+    const toggle = (dateKey, habitId) => {
+      setEntries(prev => {
+        const day = { ...(prev[dateKey] || {}) };
+        day[habitId] = !day[habitId];
+        return { ...prev, [dateKey]: day };
+      });
+    };
+
+    const setValue = (dateKey, habitId, value) => {
+      setEntries(prev => {
+        const day = { ...(prev[dateKey] || {}) };
+        day[habitId] = value;
+        return { ...prev, [dateKey]: day };
+      });
+    };
+
+    const addHabit = () => {
+      const name = newHabit.trim();
+      if (!name) return;
+      const id = uniqueId(habits);
+      setHabits(prev => [...prev, { id, name, archived: false }]);
+      setNewHabit("");
+    };
+
+    const archiveHabit = (id) => setHabits(prev => prev.map(h => h.id === id ? { ...h, archived: true } : h));
+    const unarchiveHabit = (id) => setHabits(prev => prev.map(h => h.id === id ? { ...h, archived: false } : h));
+    const deleteHabit = (id) => {
+      if (!confirm("Delete this habit and its history?")) return;
+      setHabits(prev => prev.filter(h => h.id !== id));
+      setEntries(prev => {
+        const next = { ...prev };
+        for (const k of Object.keys(next)) {
+          if (next[k] && id in next[k]) {
+            const day = { ...next[k] };
+            delete day[id];
+            next[k] = day;
+          }
+        }
+        return next;
+      });
+    };
+
+    const todayKey = toKey(new Date());
+    const metrics = useMemo(() => computeMetrics(habits, entries), [habits, entries]);
+
+    return (
+            React.createElement("div", { className: "min-h-screen" },
+                    React.createElement("header", { className: "sticky top-0 z-10 bg-white/80 backdrop-blur border-b border-neutral-200" },
+                            React.createElement("div", { className: "mx-auto max-w-6xl px-4 py-4 flex items-center justify-between gap-3" },
+                                    React.createElement("h1", { className: "text-2xl font-bold tracking-tight" }, "Habit Tracker"),
+                                    React.createElement("div", { className: "flex items-center gap-2" },
+                                            React.createElement("button", { className: "px-3 py-2 rounded-xl border border-neutral-300 hover:bg-neutral-50", onClick: () => setAnchor(addDays(anchor, -7)) }, "◀︎ Week"),
+                                            React.createElement("div", { className: "px-3 py-2 text-sm font-medium text-neutral-600" },
+                                                    formatShort(days[0]), " – ", formatShort(days[6])
+                                            ),
+                                            React.createElement("button", { className: "px-3 py-2 rounded-xl border border-neutral-300 hover:bg-neutral-50", onClick: () => setAnchor(addDays(anchor, 7)) }, "Week ▶︎"),
+                                            React.createElement("button", { className: "ml-2 px-3 py-2 rounded-xl bg-black text-white hover:opacity-90", onClick: () => setAnchor(new Date()) }, "Today")
+                                    )
+                            )
+                    ),
+                    React.createElement("main", { className: "mx-auto max-w-6xl px-4 py-6 grid grid-cols-1 lg:grid-cols-4 gap-6" },
+                            // Grid
+                            React.createElement("section", { className: "lg:col-span-3" },
+                                    React.createElement("div", { className: "rounded-2xl overflow-hidden shadow-sm border border-neutral-200 bg-white" },
+                                            React.createElement("table", { className: "w-full border-collapse" },
+                                                    React.createElement("thead", { className: "bg-neutral-50" },
+                                                            React.createElement("tr", null,
+                                                                    React.createElement("th", { className: "text-left p-3 text-xs uppercase tracking-wide text-neutral-600 w-48" }, "Habit"),
+                                                                    days.map((d) => {
+                                                                      const key = toKey(d);
+                                                                      const isToday = key === todayKey;
+                                                                      return React.createElement("th", { key, className: "p-3 text-center text-xs uppercase tracking-wide text-neutral-600" },
+                                                                              React.createElement("div", { className: "inline-flex flex-col items-center " + (isToday ? "text-black" : "") },
+                                                                                      React.createElement("span", { className: "font-semibold" }, weekdayShort(d)),
+                                                                                      React.createElement("span", { className: "text-[11px] " + (isToday ? "bg-black text-white" : "text-neutral-500") + " rounded px-1" }, formatShort(d))
+                                                                              )
+                                                                      );
+                                                                    }),
+                                                                    React.createElement("th", { className: "p-3 text-center text-xs uppercase tracking-wide text-neutral-600" }, "Week %")
+                                                            )
+                                                    ),
+                                                    React.createElement("tbody", null,
+                                                            visibleHabits.map((h) => {
+                                                              const rowChecks = days.map((d) => Boolean(entries[toKey(d)]?.[h.id]));
+                                                              const rowPct = Math.round((rowChecks.filter(Boolean).length / days.length) * 100);
+                                                              return React.createElement("tr", { key: h.id, className: "border-t border-neutral-200" },
+                                                                      React.createElement("td", { className: "p-3" },
+                                                                              React.createElement("div", { className: "flex items-center justify-between gap-2" },
+                                                                                      React.createElement("div", null,
+                                                                                              React.createElement("div", { className: "font-medium" }, h.name),
+                                                                                              React.createElement("div", { className: "text-xs text-neutral-500" },
+                                                                                                      streakLabel(h.id, entries), " • ", lifetimeLabel(h.id, entries)
+                                                                                              )
+                                                                                      ),
+                                                                                      React.createElement("div", { className: "flex items-center gap-1" },
+                                                                                              !h.archived
+                                                                                                      ? React.createElement("button", { className: "text-xs px-2 py-1 rounded-lg border hover:bg-neutral-50", onClick: () => archiveHabit(h.id) }, "Archive")
+                                                                                                      : React.createElement("button", { className: "text-xs px-2 py-1 rounded-lg border hover:bg-neutral-50", onClick: () => unarchiveHabit(h.id) }, "Unarchive"),
+                                                                                              React.createElement("button", { className: "text-xs px-2 py-1 rounded-lg border hover:bg-red-50 border-red-200 text-red-700", onClick: () => deleteHabit(h.id) }, "Delete")
+                                                                                      )
+                                                                              )
+                                                                      ),
+                                                                      days.map((d) => {
+                                                                        const key = toKey(d);
+                                                                        const checked = Boolean(entries[key]?.[h.id]);
+                                                                        const isToday = key === todayKey;
+                                                                        return React.createElement("td", { key, className: "p-3 text-center" },
+                                                                                React.createElement("button", {
+                                                                                  className:
+                                                                                          "w-8 h-8 rounded-xl border transition shadow-sm " +
+                                                                                          (checked ? "bg-green-500 border-green-600 text-white" : "bg-white border-neutral-300") +
+                                                                                          (isToday ? " ring-2 ring-black" : ""),
+                                                                                  onClick: () => toggle(key, h.id),
+                                                                                  "aria-pressed": checked,
+                                                                                  "aria-label": h.name + " on " + formatShort(d),
+                                                                                }, checked ? "✓" : "")
+                                                                        );
+                                                                      }),
+                                                                      React.createElement("td", { className: "p-3 text-center text-sm font-medium" },
+                                                                              React.createElement("span", { className: "inline-block min-w-[3ch]" }, rowPct + "%")
+                                                                      )
+                                                              );
+                                                            })
+                                                    ),
+                                                    React.createElement("tfoot", null,
+                                                            React.createElement("tr", { className: "border-t bg-neutral-50" },
+                                                                    React.createElement("td", { className: "p-3 text-xs uppercase tracking-wide text-neutral-600" }, "Daily %"),
+                                                                    days.map((d) => {
+                                                                      const key = toKey(d);
+                                                                      const vals = visibleHabits.map((h) => Boolean(entries[key]?.[h.id]));
+                                                                      const pct = visibleHabits.length ? Math.round((vals.filter(Boolean).length / visibleHabits.length) * 100) : 0;
+                                                                      return React.createElement("td", { key, className: "p-3 text-center font-medium text-sm" }, pct + "%");
+                                                                    }),
+                                                                    React.createElement("td", { className: "p-3" })
+                                                            )
+                                                    )
+                                            )
+                                    )
+                            ),
+                            // Sidebar
+                            React.createElement("aside", { className: "lg:col-span-1" },
+                                    React.createElement("div", { className: "rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm space-y-4" },
+                                            React.createElement("h2", { className: "text-lg font-semibold" }, "Add Habit"),
+                                            React.createElement("div", { className: "flex gap-2" },
+                                                    React.createElement("input", {
+                                                      className: "flex-1 px-3 py-2 rounded-xl border border-neutral-300 focus:outline-none focus:ring-2 focus:ring-black",
+                                                      placeholder: "e.g., Meditate",
+                                                      value: newHabit,
+                                                      onChange: (e) => setNewHabit(e.target.value),
+                                                      onKeyDown: (e) => e.key === "Enter" && addHabit(),
+                                                    }),
+                                                    React.createElement("button", { className: "px-3 py-2 rounded-xl bg-black text-white", onClick: addHabit }, "Add")
+                                            ),
+                                            React.createElement("div", { className: "pt-2" },
+                                                    React.createElement("h3", { className: "text-sm font-medium mb-2" }, "Show"),
+                                                    React.createElement("div", { className: "flex gap-2" },
+                                                            [{ key: "active", label: "Active" }, { key: "all", label: "All" }, { key: "archived", label: "Archived" }].map(f =>
+                                                                    React.createElement("button", {
+                                                                      key: f.key,
+                                                                      onClick: () => setFilter(f.key),
+                                                                      className: "px-3 py-1.5 rounded-xl border " + (filter === f.key ? "bg-black text-white" : "bg-white")
+                                                                    }, f.label)
+                                                            )
+                                                    )
+                                            ),
+                                            React.createElement(StatsPanel, { metrics, entries, setValue }),
+                                            React.createElement(ExportPanel, { habits, entries })
+                                    )
+                            )
+                    )
+            )
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
